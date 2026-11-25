@@ -3,7 +3,7 @@ import uuid
 from typing import Any
 
 from app.db import 连接
-from app.modules import 子户汇总镜
+from app.modules import 子户汇总镜, 子齐集闸
 from app.services.时间 import 此刻, 标准化营业日
 
 
@@ -31,29 +31,69 @@ def 回放核对(营业日: str, 批次编号: str = "") -> dict[str, Any]:
         差额数 = 0
         跳变数 = 0
         无快照 = 0
+        父权威拒绝 = 0
+        齐集核证报告: list[dict[str, Any]] = []
         for 户 in 账户们:
             账户键 = 户["账户键"]
             if 日 < 户["开户营业日"]:
                 continue
+            父键of户 = str(户.get("父户键") or "")
+            子齐集号 = (
+                子齐集闸.编齐集号(父键of户, 日)
+                if 父键of户 and 父键of户 in 父集
+                else ""
+            )
             快照 = conn.execute(
                 "SELECT 余额 FROM 周期快照 WHERE 账户键=? AND 营业日=? AND 状态='有效'",
                 (账户键, 日),
             ).fetchone()
             if not 快照:
                 无快照 += 1
+                if 账户键 in 父集:
+                    qc = 子齐集闸.核证现场(conn, 父键=账户键, 营业日=日)
+                    qid = str(qc.get("齐集号") or "")
+                    父权威拒绝 += 1
+                    差额数 += 1
+                    齐集核证报告.append(
+                        {
+                            "账户键": 账户键,
+                            "齐集号": qid,
+                            "valid": False,
+                            "缺子列表": qc.get("缺子列表") or [],
+                            "旁置有无": bool(qc.get("旁置有无")),
+                            "拒绝父权威": True,
+                        }
+                    )
+                    conn.execute(
+                        "INSERT INTO 差额行(回放批次编号, 账户键, 营业日, 快照余额, 回放余额, 差额, 原因, 齐集号, 时刻) "
+                        "VALUES (?,?,?,?,?,?,?,?,?)",
+                        (
+                            批,
+                            账户键,
+                            日,
+                            None,
+                            qc.get("现场余额"),
+                            0,
+                            "齐集未满/旁置未晋升·回放拒父权威",
+                            qid,
+                            此刻(),
+                        ),
+                    )
+                    continue
                 conn.execute(
-                    "INSERT INTO 差额行(回放批次编号, 账户键, 营业日, 快照余额, 回放余额, 差额, 原因, 时刻) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
-                    (批, 账户键, 日, None, None, 0, "缺当日快照", 此刻()),
+                    "INSERT INTO 差额行(回放批次编号, 账户键, 营业日, 快照余额, 回放余额, 差额, 原因, 齐集号, 时刻) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (批, 账户键, 日, None, None, 0, "缺当日快照", 子齐集号, 此刻()),
                 )
                 差额数 += 1
                 continue
             快照余额 = int(快照["余额"])
             if 账户键 in 父集:
-                
+                qc = 子齐集闸.核证现场(conn, 父键=账户键, 营业日=日)
+                qid = str(qc.get("齐集号") or "")
                 现场 = 子户汇总镜.现场汇总(conn, 账户键, 日, 严格=False)
                 父镜行 = conn.execute(
-                    "SELECT 余额, 汇总指纹 FROM 父镜 WHERE 账户键=? AND 营业日=?",
+                    "SELECT 余额, 汇总指纹 FROM 父镜 WHERE 账户键=? AND 营业日=? AND 状态='有效'",
                     (账户键, 日),
                 ).fetchone()
                 固化指纹 = "" if 父镜行 is None else str(父镜行["汇总指纹"])
@@ -62,13 +102,25 @@ def 回放核对(营业日: str, 批次编号: str = "") -> dict[str, Any]:
                     and 快照余额 == int(现场["余额"])
                     and 固化指纹 == str(现场["汇总指纹"])
                     and not 现场["缺子"]
+                    and bool(qc.get("已满"))
+                    and not qc.get("旁置有无")
+                )
+                齐集核证报告.append(
+                    {
+                        "账户键": 账户键,
+                        "齐集号": qid,
+                        "valid": bool(qc.get("valid")),
+                        "缺子列表": qc.get("缺子列表") or [],
+                        "旁置有无": bool(qc.get("旁置有无")),
+                        "拒绝父权威": not 匹配,
+                    }
                 )
                 if 匹配:
                     相符 += 1
                 else:
                     conn.execute(
-                        "INSERT INTO 差额行(回放批次编号, 账户键, 营业日, 快照余额, 回放余额, 差额, 原因, 时刻) "
-                        "VALUES (?,?,?,?,?,?,?,?)",
+                        "INSERT INTO 差额行(回放批次编号, 账户键, 营业日, 快照余额, 回放余额, 差额, 原因, 齐集号, 时刻) "
+                        "VALUES (?,?,?,?,?,?,?,?,?)",
                         (
                             批,
                             账户键,
@@ -76,7 +128,8 @@ def 回放核对(营业日: str, 批次编号: str = "") -> dict[str, Any]:
                             int(现场["余额"]),
                             快照余额,
                             快照余额 - int(现场["余额"]),
-                            "父镜子汇总指纹失配",
+                            "父镜子汇总指纹失配或齐集闸未放行",
+                            qid,
                             此刻(),
                         ),
                     )
@@ -101,9 +154,19 @@ def 回放核对(营业日: str, 批次编号: str = "") -> dict[str, Any]:
                 相符 += 1
             else:
                 conn.execute(
-                    "INSERT INTO 差额行(回放批次编号, 账户键, 营业日, 快照余额, 回放余额, 差额, 原因, 时刻) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
-                    (批, 账户键, 日, 快照余额, 回放余额, 差额, "快照与回放不一致", 此刻()),
+                    "INSERT INTO 差额行(回放批次编号, 账户键, 营业日, 快照余额, 回放余额, 差额, 原因, 齐集号, 时刻) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        批,
+                        账户键,
+                        日,
+                        快照余额,
+                        回放余额,
+                        差额,
+                        "快照与回放不一致",
+                        子齐集号,
+                        此刻(),
+                    ),
                 )
                 差额数 += 1
             偏离 = abs(快照余额 - (开端 + 净额))
@@ -121,6 +184,8 @@ def 回放核对(营业日: str, 批次编号: str = "") -> dict[str, Any]:
             "差额": 差额数,
             "跳变": 跳变数,
             "无快照": 无快照,
+            "父权威拒绝": 父权威拒绝,
+            "齐集核证": 齐集核证报告,
             "通过": 通过,
         }
         conn.execute(

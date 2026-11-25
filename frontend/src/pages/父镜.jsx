@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 
 const 默认日 = "2026-11-20";
@@ -8,9 +9,12 @@ function 徽({ 通, 文 }) {
 }
 
 export default function 父镜() {
+  const [search] = useSearchParams();
+  const qFromUrl = search.get("齐集号") || "";
   const [行, set行] = useState([]);
+  const [旁置, set旁置] = useState([]);
   const [账户, set账户] = useState([]);
-  const [日, set日] = useState(默认日);
+  const [日, set日] = useState(search.get("营业日") || 默认日);
   const [父户键, set父户键] = useState("户汇总");
   const [核, set核] = useState(null);
   const [讯, set讯] = useState("");
@@ -21,9 +25,16 @@ export default function 父镜() {
   const [选夹, set选夹] = useState("父子汇总样例.json");
 
   const 刷新 = async () => {
-    set行(await api.父镜());
-    set账户(await api.账户());
-    set夹具(await api.夹具());
+    const [父镜行, 旁置行, 账户行, 夹具行] = await Promise.all([
+      api.父镜(),
+      api.父旁置("仅活跃=true"),
+      api.账户(),
+      api.夹具(),
+    ]);
+    set行(父镜行);
+    set旁置(旁置行);
+    set账户(账户行);
+    set夹具(夹具行);
   };
 
   useEffect(() => {
@@ -46,6 +57,18 @@ export default function 父镜() {
     try {
       const r = await api.父镜重汇总(父户键, 日);
       set讯(`重汇总 ${r.账户键} ${r.营业日}：${r.前余额 ?? "—"} → ${r.余额}，指纹 ${r.汇总指纹.slice(0, 12)}…`);
+      await 刷新();
+      await 核证();
+    } catch (e) {
+      set讯(String(e.message || e));
+    }
+  };
+
+  const 晋升 = async (qid) => {
+    set讯("");
+    try {
+      const r = await api.齐集晋升({ 齐集号: qid });
+      set讯(`已显式晋升 ${qid}：正式余额 ${r.父正式?.余额 ?? "—"}，valid=${r.valid}`);
       await 刷新();
       await 核证();
     } catch (e) {
@@ -112,6 +135,39 @@ export default function 父镜() {
         <button className="次" onClick={() => 刷新().catch((e) => set讯(String(e.message || e)))}>刷新</button>
       </div>
       {讯 ? <p className="讯">{讯}</p> : null}
+      {qFromUrl ? (
+        <div className="提示条">
+          台面/核证页带来的齐集现场：<code>{qFromUrl}</code>
+          <Link to={`/子齐集?齐集号=${encodeURIComponent(qFromUrl)}`}>在齐集核证中打开同一缺子现场 →</Link>
+        </div>
+      ) : null}
+
+      {旁置.length ? (
+        <div className="段" data-testid="缺子旁置清单">
+          <h2 className="段题">缺子旁置父镜（非权威，禁止当正式镜）</h2>
+          <table>
+            <thead>
+              <tr><th>父户键</th><th>营业日</th><th>旁置余额</th><th>缺子清单</th><th>齐集号</th><th>状态</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              {旁置.map((r) => (
+                <tr key={r.旁置号}>
+                  <td>{r.账户键}</td>
+                  <td>{r.营业日}</td>
+                  <td>{r.余额}</td>
+                  <td>{(r.缺子列表 || r.缺子 || []).join("、") || "（已齐，待晋升）"}</td>
+                  <td><code>{r.齐集号}</code></td>
+                  <td>{r.状态}</td>
+                  <td>
+                    <Link className="次" to={`/子齐集?齐集号=${encodeURIComponent(r.齐集号)}`}>打开齐集</Link>
+                    <button style={{ marginLeft: 6 }} onClick={() => 晋升(r.齐集号)}>显式晋升</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
 
       {核 ? (
         <div className="提示条">
@@ -205,7 +261,7 @@ export default function 父镜() {
         <h2 className="段题">夹具演练</h2>
         <div className="行">
           <select value={选夹} onChange={(e) => set选夹(e.target.value)}>
-            {夹具.filter((n) => n.includes("父") || n.includes("篡改")).map((n) => (
+            {夹具.filter((n) => /父|篡改|齐集|缺子|晋升/.test(n)).map((n) => (
               <option key={n} value={n}>{n}</option>
             ))}
           </select>

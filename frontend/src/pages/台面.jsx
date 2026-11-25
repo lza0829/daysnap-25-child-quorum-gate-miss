@@ -4,11 +4,14 @@ import { api } from "../api.js";
 
 export default function 台面() {
   const [总览, set总览] = useState(null);
+  const [齐集, set齐集] = useState(null);
   const [讯, set讯] = useState("");
   const [忙, set忙] = useState(false);
 
   const 刷新 = async () => {
-    set总览(await api.总览());
+    const [o, q] = await Promise.all([api.总览(), api.子齐集核证()]);
+    set总览(o);
+    set齐集(q);
   };
 
   useEffect(() => {
@@ -37,6 +40,8 @@ export default function 台面() {
   };
 
   const o = 总览 || {};
+  const qRows = 齐集?.齐集 || [];
+  const 待处理齐集 = qRows.find((r) => !r.valid || r.旁置有无 || r.状态 === "未满" || r.状态 === "待晋升");
   return (
     <div>
       <h1 className="题">台面</h1>
@@ -44,6 +49,18 @@ export default function 台面() {
       <div className="提示条">
         最短路径：点「一键冒烟」→ 打开 <Link to="/周期快照">周期快照</Link> 与 <Link to="/差额清单">差额清单</Link>。
         父子汇总见 <Link to="/父镜">父镜固化</Link>：父=子和、父键流水旁置、篡改子快照报指纹失配。
+        {齐集 ? (
+          <>
+            {"　"}子齐集闸：最近 {齐集.总数 ?? qRows.length} 票，未满/旁置 {齐集.未满数 ?? "—"}。
+            {待处理齐集 ? (
+              <Link to={`/子齐集?齐集号=${encodeURIComponent(待处理齐集.齐集号)}`}>
+                打开齐集 <code>{待处理齐集.齐集号}</code>
+              </Link>
+            ) : (
+              <Link to="/子齐集">打开齐集核证</Link>
+            )}
+          </>
+        ) : null}
       </div>
       <div className="阶条">
         <div className="阶"><div className="序">账户</div><b>{o.账户数 ?? "—"}</b><span>册内户数</span></div>

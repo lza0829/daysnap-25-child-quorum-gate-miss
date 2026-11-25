@@ -17,7 +17,12 @@ async function 请求(path, opts = {}) {
   return data;
 }
 
+export async function 取(path, opts = {}) {
+  return 请求(path, opts);
+}
+
 export const api = {
+  取,
   健康: () => 请求("/健康"),
   总览: () => 请求("/总览"),
   台参: () => 请求("/台参"),
@@ -47,5 +52,14 @@ export const api = {
   父镜解绑: (子户键) =>
     请求("/父镜/解绑", { method: "POST", body: JSON.stringify({ 子户键 }) }),
   父镜演练: (名) => 请求("/父镜/演练", { method: "POST", body: JSON.stringify({ 名 }) }),
+  父镜抽取: (账户键, 营业日, 批次编号 = "") =>
+    请求("/父镜/抽取", { method: "POST", body: JSON.stringify({ 账户键, 营业日, 批次编号 }) }),
+  子齐集核证: (q = "") => 请求(`/核证/子齐集${q ? `?${q}` : ""}`),
+  齐集列表: () => 请求("/齐集"),
+  父旁置: (q = "") => 请求(`/父旁置${q ? `?${q}` : ""}`),
+  齐集晋升: (payload) => 请求("/齐集/晋升", { method: "POST", body: JSON.stringify(payload) }),
+  齐集标记父成功: (payload) =>
+    请求("/齐集/标记父成功", { method: "POST", body: JSON.stringify(payload) }),
+  齐集演练: (名) => 请求("/齐集/演练", { method: "POST", body: JSON.stringify({ 名 }) }),
   重置: () => 请求("/重置业务库", { method: "POST", body: "{}" }),
 };

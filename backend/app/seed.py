@@ -6,9 +6,80 @@ from app.db import 连接
 CREATE TABLE IF NOT EXISTS 子齐集闸表 (
   编号 INTEGER PRIMARY KEY AUTOINCREMENT,
   齐集号 TEXT, 父键 TEXT, 营业日 TEXT, 应收 TEXT, 实收 TEXT, 缺子 TEXT,
+  应收子集合 TEXT NOT NULL DEFAULT '[]',
+  实收集合 TEXT NOT NULL DEFAULT '[]',
+  缺子列表 TEXT NOT NULL DEFAULT '[]',
   时刻 TEXT NOT NULL DEFAULT '',
-  载荷 TEXT NOT NULL DEFAULT '{}'
+  载荷 TEXT NOT NULL DEFAULT '{}',
+  应收数 INTEGER NOT NULL DEFAULT 0,
+  实收数 INTEGER NOT NULL DEFAULT 0,
+  状态 TEXT NOT NULL DEFAULT '待集',
+  口径 TEXT NOT NULL DEFAULT '乙·旁置晋升',
+  批次编号 TEXT NOT NULL DEFAULT '',
+  首发批次编号 TEXT NOT NULL DEFAULT '',
+  旁置号 TEXT NOT NULL DEFAULT '',
+  旁置有无 INTEGER NOT NULL DEFAULT 0,
+  父正式有无 INTEGER NOT NULL DEFAULT 0,
+  valid INTEGER NOT NULL DEFAULT 0,
+  更新时刻 TEXT NOT NULL DEFAULT ''
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_子齐集闸_齐集号 ON 子齐集闸表(齐集号);
+CREATE INDEX IF NOT EXISTS idx_子齐集闸_父日 ON 子齐集闸表(父键, 营业日);
+
+CREATE TABLE IF NOT EXISTS 旁置父镜 (
+  旁置号 TEXT PRIMARY KEY,
+  齐集号 TEXT NOT NULL,
+  快照键 TEXT NOT NULL,
+  账户键 TEXT NOT NULL,
+  营业日 TEXT NOT NULL,
+  余额 INTEGER NOT NULL,
+  子户数 INTEGER NOT NULL DEFAULT 0,
+  应收子户数 INTEGER NOT NULL DEFAULT 0,
+  子指纹集 TEXT NOT NULL DEFAULT '[]',
+  汇总指纹 TEXT NOT NULL DEFAULT '',
+  缺子 TEXT NOT NULL DEFAULT '[]',
+  缺子列表 TEXT NOT NULL DEFAULT '[]',
+  抽取批次编号 TEXT NOT NULL DEFAULT '',
+  来源 TEXT NOT NULL DEFAULT '齐集未满旁置',
+  状态 TEXT NOT NULL DEFAULT '旁置·非权威',
+  时刻 TEXT NOT NULL,
+  更新时刻 TEXT NOT NULL DEFAULT '',
+  晋升时刻 TEXT NOT NULL DEFAULT '',
+  正式批次编号 TEXT NOT NULL DEFAULT '',
+  UNIQUE(账户键, 营业日)
+);
+CREATE INDEX IF NOT EXISTS idx_旁置父镜_齐集号 ON 旁置父镜(齐集号);
+CREATE VIEW IF NOT EXISTS 父旁置镜 AS
+SELECT *, 齐集号 AS quorum_no, 齐集号 AS qid, 账户键 AS parent_key,
+       营业日 AS biz_day, 缺子列表 AS missing_children, 1 AS sideline_exists
+FROM 旁置父镜;
+CREATE VIEW IF NOT EXISTS 父旁置 AS SELECT * FROM 父旁置镜;
+CREATE VIEW IF NOT EXISTS 缺子旁置清单 AS
+SELECT * FROM 父旁置镜 WHERE 状态 <> '已晋升';
+CREATE VIEW IF NOT EXISTS 齐集行 AS
+SELECT *, 齐集号 AS quorum_no, 齐集号 AS quorum_id, 齐集号 AS qid,
+       父键 AS parent_key, 父键 AS parent, 营业日 AS biz_day,
+       应收子集合 AS expected_children, 实收集合 AS collected_children,
+       缺子列表 AS missing_children, 旁置有无 AS has_sideline,
+       父正式有无 AS official_exists
+FROM 子齐集闸表;
+CREATE VIEW IF NOT EXISTS 子齐集 AS SELECT * FROM 齐集行;
+CREATE VIEW IF NOT EXISTS 齐集 AS SELECT * FROM 齐集行;
+CREATE VIEW IF NOT EXISTS 子齐集闸 AS SELECT * FROM 齐集行;
+CREATE VIEW IF NOT EXISTS 齐集闸 AS SELECT * FROM 齐集行;
+CREATE VIEW IF NOT EXISTS quorum AS SELECT * FROM 齐集行;
+CREATE VIEW IF NOT EXISTS child_quorum AS SELECT * FROM 齐集行;
+CREATE VIEW IF NOT EXISTS 旁置镜 AS SELECT * FROM 父旁置镜;
+CREATE VIEW IF NOT EXISTS 父镜旁置 AS SELECT * FROM 父旁置镜;
+CREATE VIEW IF NOT EXISTS sideline_parent_mirror AS SELECT * FROM 父旁置镜;
+CREATE VIEW IF NOT EXISTS 缺子清单 AS
+SELECT
+  齐集号, quorum_no, qid, 父键, 父键 AS 父户键, parent_key, 营业日, biz_day,
+  应收, 应收子集合, expected_children,
+  实收, 实收集合, collected_children,
+  缺子, 缺子列表, missing_children,
+  状态, valid, 父正式有无 AS official_exists, 更新时刻
+FROM 齐集行;
 
 CREATE TABLE IF NOT EXISTS 台参 (
   键 TEXT PRIMARY KEY,
@@ -33,6 +104,7 @@ CREATE TABLE IF NOT EXISTS 父镜 (
   抽取批次编号 TEXT NOT NULL,
   来源 TEXT NOT NULL DEFAULT '子户汇总',
   状态 TEXT NOT NULL DEFAULT '有效',
+  齐集号 TEXT NOT NULL DEFAULT '',
   时刻 TEXT NOT NULL,
   UNIQUE(账户键, 营业日)
 );
@@ -60,6 +132,7 @@ CREATE TABLE IF NOT EXISTS 周期快照 (
   抽取批次编号 TEXT NOT NULL,
   来源 TEXT NOT NULL DEFAULT '日终抽取',
   状态 TEXT NOT NULL DEFAULT '有效',
+  齐集号 TEXT NOT NULL DEFAULT '',
   UNIQUE(账户键, 营业日)
 );
 CREATE TABLE IF NOT EXISTS 回放批次 (
@@ -77,6 +150,7 @@ CREATE TABLE IF NOT EXISTS 差额行 (
   回放余额 INTEGER,
   差额 INTEGER NOT NULL,
   原因 TEXT NOT NULL,
+  齐集号 TEXT NOT NULL DEFAULT '',
   时刻 TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS 断档记录 (
@@ -149,6 +223,118 @@ def _迁移(conn) -> None:
     if "父户键" not in 列:
         conn.execute("ALTER TABLE 账户 ADD COLUMN 父户键 TEXT NOT NULL DEFAULT ''")
 
+    齐集列 = {r["name"] for r in conn.execute("PRAGMA table_info(子齐集闸表)")}
+    for 名, 定义 in [
+        ("应收数", "INTEGER NOT NULL DEFAULT 0"),
+        ("实收数", "INTEGER NOT NULL DEFAULT 0"),
+        ("状态", "TEXT NOT NULL DEFAULT '待集'"),
+        ("口径", "TEXT NOT NULL DEFAULT '乙·旁置晋升'"),
+        ("批次编号", "TEXT NOT NULL DEFAULT ''"),
+        ("首发批次编号", "TEXT NOT NULL DEFAULT ''"),
+        ("旁置号", "TEXT NOT NULL DEFAULT ''"),
+        ("旁置有无", "INTEGER NOT NULL DEFAULT 0"),
+        ("父正式有无", "INTEGER NOT NULL DEFAULT 0"),
+        ("valid", "INTEGER NOT NULL DEFAULT 0"),
+        ("更新时刻", "TEXT NOT NULL DEFAULT ''"),
+        ("应收子集合", "TEXT NOT NULL DEFAULT '[]'"),
+        ("实收集合", "TEXT NOT NULL DEFAULT '[]'"),
+        ("缺子列表", "TEXT NOT NULL DEFAULT '[]'"),
+    ]:
+        if 名 not in 齐集列:
+            conn.execute(f"ALTER TABLE 子齐集闸表 ADD COLUMN {名} {定义}")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_子齐集闸_齐集号 ON 子齐集闸表(齐集号)"
+    )
+    # 语义列名与基线短列名保持同步，方便直接 SQL 断言“应收子集合/实收集合/缺子列表”。
+    # 旧行经过 ALTER 后三列已有 DEFAULT '[]'，因此不能只回填空串；无条件按短列同步。
+    conn.execute(
+        "UPDATE 子齐集闸表 SET "
+        "应收子集合=COALESCE(NULLIF(应收, ''), '[]'), "
+        "实收集合=COALESCE(NULLIF(实收, ''), '[]'), "
+        "缺子列表=COALESCE(NULLIF(缺子, ''), '[]')"
+    )
+
+    旁置镜列 = {r["name"] for r in conn.execute("PRAGMA table_info(旁置父镜)")}
+    if "缺子列表" not in 旁置镜列:
+        conn.execute("ALTER TABLE 旁置父镜 ADD COLUMN 缺子列表 TEXT NOT NULL DEFAULT '[]'")
+    conn.execute(
+        "UPDATE 旁置父镜 SET 缺子列表=COALESCE(NULLIF(缺子, ''), '[]')"
+    )
+
+    # 兼容视图在旧库中可能是 ALTER 前建立的 SELECT * 视图；
+    # CREATE VIEW IF NOT EXISTS 不会刷新定义，需显式重建以暴露新增物理列。
+    for 视图名 in (
+        "父旁置镜",
+        "父旁置",
+        "缺子旁置清单",
+        "齐集行",
+        "子齐集",
+        "齐集",
+        "子齐集闸",
+        "齐集闸",
+        "quorum",
+        "child_quorum",
+        "旁置镜",
+        "父镜旁置",
+        "sideline_parent_mirror",
+        "缺子清单",
+    ):
+        conn.execute(f"DROP VIEW IF EXISTS {视图名}")
+    conn.execute(
+        "CREATE VIEW 父旁置镜 AS "
+        "SELECT *, 齐集号 AS quorum_no, 齐集号 AS qid, 账户键 AS parent_key, "
+        "营业日 AS biz_day, 缺子列表 AS missing_children, 1 AS sideline_exists "
+        "FROM 旁置父镜"
+    )
+    conn.execute("CREATE VIEW 父旁置 AS SELECT * FROM 父旁置镜")
+    conn.execute(
+        "CREATE VIEW 缺子旁置清单 AS "
+        "SELECT * FROM 父旁置镜 WHERE 状态 <> '已晋升'"
+    )
+    conn.execute(
+        "CREATE VIEW 齐集行 AS "
+        "SELECT *, 齐集号 AS quorum_no, 齐集号 AS quorum_id, 齐集号 AS qid, "
+        "父键 AS parent_key, 父键 AS parent, 营业日 AS biz_day, "
+        "应收子集合 AS expected_children, 实收集合 AS collected_children, "
+        "缺子列表 AS missing_children, 旁置有无 AS has_sideline, "
+        "父正式有无 AS official_exists "
+        "FROM 子齐集闸表"
+    )
+    for 视图名 in ("子齐集", "齐集", "子齐集闸", "齐集闸", "quorum", "child_quorum"):
+        conn.execute(f"CREATE VIEW {视图名} AS SELECT * FROM 齐集行")
+    conn.execute("CREATE VIEW 旁置镜 AS SELECT * FROM 父旁置镜")
+    conn.execute("CREATE VIEW 父镜旁置 AS SELECT * FROM 父旁置镜")
+    conn.execute(
+        "CREATE VIEW sideline_parent_mirror AS SELECT * FROM 父旁置镜"
+    )
+    conn.execute(
+        "CREATE VIEW 缺子清单 AS "
+        "SELECT 齐集号, quorum_no, qid, 父键, 父键 AS 父户键, parent_key, "
+        "营业日, biz_day, 应收, 应收子集合, expected_children, "
+        "实收, 实收集合, collected_children, 缺子, 缺子列表, missing_children, "
+        "状态, valid, 父正式有无 AS official_exists, 更新时刻 "
+        "FROM 齐集行"
+    )
+
+    差额列 = {r["name"] for r in conn.execute("PRAGMA table_info(差额行)")}
+    if "齐集号" not in 差额列:
+        conn.execute("ALTER TABLE 差额行 ADD COLUMN 齐集号 TEXT NOT NULL DEFAULT ''")
+
+    父镜列 = {r["name"] for r in conn.execute("PRAGMA table_info(父镜)")}
+    if "齐集号" not in 父镜列:
+        conn.execute("ALTER TABLE 父镜 ADD COLUMN 齐集号 TEXT NOT NULL DEFAULT ''")
+
+    快照列 = {r["name"] for r in conn.execute("PRAGMA table_info(周期快照)")}
+    if "齐集号" not in 快照列:
+        conn.execute("ALTER TABLE 周期快照 ADD COLUMN 齐集号 TEXT NOT NULL DEFAULT ''")
+
+    旁置列 = {r["name"] for r in conn.execute("PRAGMA table_info(旁置簿)")}
+    if "旁置号" not in 旁置列:
+        conn.execute("ALTER TABLE 旁置簿 ADD COLUMN 旁置号 TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_旁置簿_旁置号 ON 旁置簿(旁置号) WHERE 旁置号<>''"
+    )
+
 
 def 初始化库() -> None:
     conn = 连接()
@@ -164,6 +350,8 @@ def 初始化库() -> None:
             "重复抽取": "盖写同日快照",
             "父镜口径": "乙·指纹固化",
             "父键流水": "旁置不入汇总",
+            "齐集架构": "乙案·未满旁置·显式晋升",
+            "齐集未满口径": "旁置晋升",
         }.items():
             conn.execute("INSERT INTO 台参(键, 值) VALUES (?, ?)", (k, v))
     if conn.execute("SELECT COUNT(*) AS c FROM 账户").fetchone()["c"] == 0:

@@ -11,14 +11,23 @@ import threading
 from typing import Any
 
 from app.db import 夹具目录, 连接
-from app.modules import 子户汇总镜
+from app.modules import 子户汇总镜, 子齐集闸
 from app.services import 抽取, 回放
 from app.services.装载 import 装载流水
 
 
 def _读夹具(名: str) -> dict[str, Any]:
-    path = 夹具目录 / 名
-    if not path.exists():
+    原名 = str(名 or "").strip()
+    候选 = [原名]
+    if 原名 and not 原名.lower().endswith(".json"):
+        候选.append(f"{原名}.json")
+    path = None
+    for 名候选 in 候选:
+        p = 夹具目录 / 名候选
+        if p.exists():
+            path = p
+            break
+    if path is None:
         raise FileNotFoundError(f"夹具不存在: {名}")
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -44,6 +53,14 @@ def _取父户(闩: dict[str, Any]) -> str:
 
 def 演练(名: str) -> dict[str, Any]:
     闩 = _读夹具(名)
+
+    # 新齐集夹具含“缺子抽取/补齐/显式晋升”状态机；交给专门演练器，
+    # 同时保留本入口以兼容基线 POST /api/父镜/演练。
+    if isinstance(闩, dict) and ("缺子抽取" in 闩 or "补齐" in 闩):
+        from app.services import 齐集演练
+
+        return 齐集演练.演练(名)
+
     报告: dict[str, Any] = {"夹具": 名, "说明": 闩.get("说明", ""), "步骤": []}
 
     
@@ -103,6 +120,7 @@ def 演练(名: str) -> dict[str, Any]:
         父户 = _取父户(闩)
         父镜 = 子户汇总镜.读取父镜(父户, 日)
         核 = 子户汇总镜.核证(父户, 日)
+        q核 = 子齐集闸.核证现场(父键=父户, 营业日=日)
         批集 = {x["批次编号"] for x in 结果}
         同批 = bool(父镜) and 父镜.get("抽取批次编号") in 批集 and all(
             x.get("抽取批次编号") == 父镜.get("抽取批次编号")
@@ -117,6 +135,9 @@ def 演练(名: str) -> dict[str, Any]:
                     "父镜": 父镜,
                     "父子同批": 同批,
                     "核证valid": 核.get("valid"),
+                    "齐集号": q核.get("齐集号"),
+                    "齐集valid": q核.get("valid"),
+                    "缺子列表": q核.get("缺子列表") or [],
                 }
             }
         )
